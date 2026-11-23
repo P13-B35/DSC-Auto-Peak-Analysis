@@ -1,0 +1,3 @@
+# Optional legacy .xls support; .xlsx is supported by requirements.txt.
+-r requirements.txt
+xlrd>=2.0.1,<3

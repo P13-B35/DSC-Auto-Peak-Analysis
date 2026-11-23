@@ -1,0 +1,7 @@
+cff-version: 1.2.0
+message: "Please cite DSC PeakBot when using this software. Article metadata will be added after publication."
+title: "DSC PeakBot"
+type: software
+authors:
+  - family-names: Wu
+    given-names: Yuntao

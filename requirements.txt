@@ -1,0 +1,9 @@
+# Versions installed in the validation environment (Python 3.8.2, CPU).
+numpy==1.24.3
+scipy==1.10.1
+pandas==2.0.3
+tensorflow==2.13.0
+matplotlib==3.7.5
+SciencePlots==2.2.1
+openpyxl==3.1.5
+h5py==3.11.0
