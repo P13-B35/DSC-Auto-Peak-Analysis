@@ -1,4 +1,4 @@
-# DSC PeakBot 使用说明
+# DSC熔融峰全自动解析 使用说明
 
 本文件夹包含DSC算法代码、依赖、使用说明和输入模板。论文原始实测数据、训练数据、验证数据及预训练权重未包含在内。
 
@@ -16,7 +16,7 @@
 | `templates/` | 只有表头的输入模板，不是实验数据 |
 | `examples/make_demo.py` | 生成明确标记为人工曲线的运行示例 |
 | `requirements.txt` | 根据本机已安装版本整理的依赖 |
-| `CITATION.cff` | DSC PeakBot软件引用信息 |
+| `CITATION.cff` | 软件引用信息 |
 | `SHA256SUMS.txt` | 文件校验值 |
 
 目录名保留`peakbot`是为了维持原有Python导入关系，其内部只收集DSC所需模块。

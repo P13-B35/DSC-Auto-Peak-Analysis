@@ -1,6 +1,6 @@
-# DSC PeakBot
+# DSC Auto Peak Analysis
 
-DSC PeakBot contains a one-dimensional CNN for identifying melting-peak
+DSC Auto Peak Analysis contains a one-dimensional CNN for identifying melting-peak
 candidates in differential scanning calorimetry curves, along with preprocessing,
 FS fitting, synthetic training-curve generation, baseline construction, and
 thermal-parameter calculation.
