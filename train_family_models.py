@@ -32,7 +32,6 @@ os.environ.setdefault("TF_NUM_INTEROP_THREADS", "2")
 
 from peakbot.dsc_peakbot.config import Config, PAPER_WINDOWS
 from peakbot.dsc_peakbot.data_loader import DSCDataset
-from peakbot.dsc_peakbot.model import DSCPeakBot, data_generator, predict_on_curve
 from peakbot.dsc_peakbot.preprocessing import (
     extract_scalar_features,
     extract_window,
@@ -172,11 +171,15 @@ def mine_hard_negative_references(dataset, window, per_curve=16,
     for curve in dataset.curves:
         temp, signal = curve.to_numpy()
         known = refs_by_curve.get(curve.name, [])
-        melt_centres = [float(r["temp_center"]) for r in known
-                        if r["type"] == "melt_peak"]
+        melt_intervals = [(float(r["temp_start"]), float(r["temp_end"]))
+                          for r in known if r["type"] == "melt_peak"]
         occupied = [float(r["temp_center"]) for r in known]
         is_broad = family == "broad" if family is not None else window >= 256
-        melt_exclusion = 12.0 if is_broad else 6.0
+        # Exclude the entire annotated response at either observation scale.
+        # A broad peak shoulder is not a negative sample merely because it is
+        # far from the annotated apex.
+        melt_buffer = (target_span_c / 2.0 if target_span_c is not None
+                       else 12.0 if is_broad else 6.0)
         min_sep = 1.5 if is_broad else 0.8
         raw_window = (window if target_span_c is None
                       else temperature_window_size(temp, target_span_c))
@@ -189,7 +192,8 @@ def mine_hard_negative_references(dataset, window, per_curve=16,
             t = float(temp[idx])
             if t < Config.MIN_TEMPERATURE:
                 continue
-            if melt_centres and min(abs(t - c) for c in melt_centres) < melt_exclusion:
+            if any(lo - melt_buffer <= t <= hi + melt_buffer
+                   for lo, hi in melt_intervals):
                 continue
             if occupied and min(abs(t - c) for c in occupied) < min_sep:
                 continue
@@ -241,7 +245,44 @@ def load_reference_instances(folder, window, augment_count, seed,
     return dataset, instances
 
 
-def balance_instances(instances, base_target, seed):
+def load_shared_instances(records, window, augment_count, seed,
+                          hard_negatives_per_curve=16, target_span_c=None):
+    """Both scales receive the same curves and annotated sampling positions."""
+    from shared_dataset import load_plan_dataset
+    np.random.seed(seed)
+    random.seed(seed)
+    dataset = load_plan_dataset(records)
+    if hard_negatives_per_curve:
+        # Use ONE fixed proposal policy at both scales.  The extracted model
+        # windows differ, but the candidate positions and labels do not.
+        mine_hard_negative_references(
+            dataset, 240, per_curve=hard_negatives_per_curve,
+            family="shared", target_span_c=4.0)
+    original_references = dataset.references
+    dataset.references = [dict(ref) for ref in original_references]
+    for curve in dataset.curves:
+        temp, signal = curve.to_numpy()
+        extrema = np.where(find_local_maxima(signal, mode="both"))[0]
+        common_radius = temperature_window_size(temp, 4.0) // 4
+        if not len(extrema):
+            continue
+        for ref in dataset.references:
+            if ref["filename"] != curve.name or ref["type"] != "melt_peak":
+                continue
+            annotated = int(np.argmin(np.abs(temp - ref["temp_center"])))
+            nearest = int(extrema[np.argmin(np.abs(extrema - annotated))])
+            if abs(nearest - annotated) < common_radius:
+                ref["temp_center"] = float(temp[nearest])
+    instances = prepare_instances_from_references(
+        dataset, window_size=window, augment_count=augment_count, verbose=True,
+        target_span_c=target_span_c)
+    # Keep the original annotated centers for curve-level evaluation.  The
+    # common snapping above determines only the model sampling positions.
+    dataset.references = original_references
+    return dataset, instances
+
+
+def balance_instances(instances, base_target, seed, preserve_all=False):
     groups = defaultdict(list)
     for inst in instances:
         groups[int(np.argmax(inst["type"]))].append(inst)
@@ -256,8 +297,13 @@ def balance_instances(instances, base_target, seed):
         if not group:
             raise RuntimeError(f"No training instances for class {cls_idx}")
         target = targets[cls_idx]
-        replace = len(group) < target
-        indices = rng.choice(len(group), size=target, replace=replace)
+        if preserve_all:
+            # Never discard an annotated window or complete source curve.
+            balanced.extend(group)
+            target = max(target, len(group))
+            indices = rng.choice(len(group), size=target - len(group), replace=True)
+        else:
+            indices = rng.choice(len(group), size=target, replace=len(group) < target)
         balanced.extend(group[int(i)] for i in indices)
     rng.shuffle(balanced)
     return balanced
@@ -322,6 +368,7 @@ def nms_temperature(peaks, min_separation_C):
 
 
 def curve_detection_metrics(pb, dataset, tolerance_C, nms_C, target_span_c=None):
+    from peakbot.dsc_peakbot.model import predict_on_curve
     refs_by_curve = defaultdict(list)
     for ref in dataset.references:
         if ref["type"] == "melt_peak":
@@ -381,8 +428,10 @@ def curve_detection_metrics(pb, dataset, tolerance_C, nms_C, target_span_c=None)
     }
 
 
-def train_one(family, variant, epochs=50, patience=8, paper_data=None):
+def train_one(family, variant, epochs=50, patience=8, paper_data=None,
+              dataset_plan=None):
     import tensorflow as tf
+    from peakbot.dsc_peakbot.model import DSCPeakBot, data_generator
 
     cfg = FAMILY_CONFIG[family].copy()
     target_span_c = None
@@ -393,36 +442,58 @@ def train_one(family, variant, epochs=50, patience=8, paper_data=None):
         if data_root == (WORK / "data").resolve():
             raise ValueError("Supply prepared mW data rather than the historical voltage dataset")
         cfg["synthetic"] = data_root / f"synthetic_{family}"
+        from shared_dataset import build_dataset_plan
+        if dataset_plan is None:
+            dataset_plan = build_dataset_plan(data_root, variant)
+        if dataset_plan["variant"] != variant:
+            raise ValueError("Dataset plan variant does not match requested training")
     Config.WINDOW_SIZE = cfg["window"]
     Config.SG_BOUNDARY = 151 if family == "broad" else 31
     Config.EPOCHS = epochs
     Config.CONV_LAYER_SIZES = [32, 64, 128, 256]
     Config.DROPOUT = 0.2
+    Config.MIN_TEMPERATURE = float("-inf") if dataset_plan is not None else 80.0
 
     split_root = data_root / "splits" / family
     real_train_dir = split_root / "real_train"
     real_val_dir = split_root / "real_val"
-    if not real_train_dir.exists():
+    if dataset_plan is None and not real_train_dir.exists():
         raise RuntimeError("Run --prepare before training")
 
     window_options = {"family": family, "target_span_c": target_span_c}
-    _, real_train = load_reference_instances(
-        real_train_dir, cfg["window"], augment_count=2, seed=SEED, **window_options)
-    val_dataset, val_instances = load_reference_instances(
-        real_val_dir, cfg["window"], augment_count=0, seed=SEED + 1,
-        **window_options)
+    if dataset_plan is None:
+        _, real_train = load_reference_instances(
+            real_train_dir, cfg["window"], augment_count=2, seed=SEED, **window_options)
+        val_dataset, val_instances = load_reference_instances(
+            real_val_dir, cfg["window"], augment_count=0, seed=SEED + 1,
+            **window_options)
+    else:
+        _, real_train = load_shared_instances(
+            dataset_plan["real_train"], cfg["window"], augment_count=2,
+            seed=SEED, target_span_c=target_span_c)
+        val_dataset, val_instances = load_shared_instances(
+            dataset_plan["real_val"], cfg["window"], augment_count=0,
+            seed=SEED + 1, target_span_c=target_span_c)
 
     train_instances = list(real_train)
     if variant == "real_fs":
-        _, synth_instances = load_reference_instances(
-            cfg["synthetic"], cfg["window"], augment_count=0, seed=SEED + 2,
-            hard_negatives_per_curve=8, **window_options)
+        if dataset_plan is None:
+            _, synth_instances = load_reference_instances(
+                cfg["synthetic"], cfg["window"], augment_count=0, seed=SEED + 2,
+                hard_negatives_per_curve=8, **window_options)
+        else:
+            _, synth_instances = load_shared_instances(
+                dataset_plan["synthetic_train"], cfg["window"], augment_count=0,
+                seed=SEED + 2, hard_negatives_per_curve=8,
+                target_span_c=target_span_c)
         train_instances.extend(synth_instances)
     elif variant != "real_only":
         raise ValueError(variant)
 
     target = 480 if variant == "real_fs" else 320
-    train_instances = balance_instances(train_instances, target, SEED + 3)
+    n_train_instances_original = len(train_instances)
+    train_instances = balance_instances(
+        train_instances, target, SEED + 3, preserve_all=dataset_plan is not None)
 
     if paper_data is None:
         run_root = WORK / "training_runs" / f"{family}_{variant}"
@@ -432,6 +503,9 @@ def train_one(family, variant, epochs=50, patience=8, paper_data=None):
         run_parent.mkdir(parents=True, exist_ok=True)
         run_root = Path(tempfile.mkdtemp(
             prefix=f"{family}_{variant}_seed{SEED}_", dir=str(run_parent)))
+    if dataset_plan is not None:
+        (run_root / "dataset_plan.json").write_text(
+            json.dumps(dataset_plan, ensure_ascii=False, indent=2), encoding="utf-8")
     train_folder = run_root / "train_instances"
     val_folder = run_root / "val_instances"
     save_instance_set(train_instances, train_folder)
@@ -453,6 +527,12 @@ def train_one(family, variant, epochs=50, patience=8, paper_data=None):
     pb.build_model(verbose=True)
     pb.compile_model()
     csv_log = run_root / "training_history.tsv"
+
+    class LocalCSVLogger(tf.keras.callbacks.CSVLogger):
+        """Use Python file I/O for Windows paths containing Unicode."""
+        def on_train_begin(self, logs=None):
+            self.csv_file = open(self.filename, "w", encoding="utf-8", newline="")
+
     callbacks = [
         tf.keras.callbacks.EarlyStopping(
             monitor="val_peak_type_loss", mode="min", patience=patience,
@@ -460,11 +540,12 @@ def train_one(family, variant, epochs=50, patience=8, paper_data=None):
         tf.keras.callbacks.ReduceLROnPlateau(
             monitor="val_peak_type_loss", mode="min", patience=max(3, patience // 2),
             factor=0.6, min_lr=3e-7, verbose=1),
-        tf.keras.callbacks.CSVLogger(str(csv_log), separator="\t"),
+        LocalCSVLogger(str(csv_log), separator="\t"),
     ]
     history = pb.train(
         data_generator(str(train_folder)), val_data=(val_x, val_y),
-        log_dir=str(run_root / "tensorboard"), callbacks=callbacks, verbose=2)
+        log_dir=str(run_root / "tensorboard"),
+        callbacks=callbacks, verbose=2, tensorboard=str(run_root).isascii())
 
     model_path = run_root / "model.h5"
     pb.save(str(model_path))
@@ -486,6 +567,12 @@ def train_one(family, variant, epochs=50, patience=8, paper_data=None):
         "epochs_run": len(history.history.get("loss", [])),
         "steps_per_epoch": Config.STEPS_PER_EPOCH,
         "n_train_instances_balanced": len(train_instances),
+        "n_train_instances_original": n_train_instances_original,
+        "dataset_fingerprint": (dataset_plan["fingerprint"]
+                                if dataset_plan is not None else None),
+        "shared_curve_counts": ({part: len(dataset_plan[part]) for part in
+                                 ("real_train", "real_val", "synthetic_train")}
+                                if dataset_plan is not None else None),
         "train_class_counts": dict(Counter(
             int(np.argmax(i["type"])) for i in train_instances)),
         "n_val_instances": len(val_instances),

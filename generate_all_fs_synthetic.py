@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 from pathlib import Path
 
@@ -110,6 +111,8 @@ def generate_curve(material_rows: pd.DataFrame, curve_number: int, family: str, 
     occupied = []
     meta = {"filename": filename, "material": base["material"], "family": family,
             "template_curve_id": base["curve_id"]}
+    # Record all measured parents without changing the generated samples.
+    source_curve_ids = [str(base["curve_id"])]
 
     primary = sample_peak(base, t, rng)
     signal += primary["amplitude"] * primary["unit"]
@@ -123,6 +126,8 @@ def generate_curve(material_rows: pd.DataFrame, curve_number: int, family: str, 
     # producing shoulder/double-peak training examples without using test data.
     if family == "broad" and rng.random() < 0.30:
         other = material_rows.iloc[int(rng.integers(0, len(material_rows)))]
+        meta["secondary_template_curve_id"] = str(other["curve_id"])
+        source_curve_ids.append(str(other["curve_id"]))
         second = sample_peak(other, t, rng)
         direction = float(rng.choice([-1.0, 1.0]))
         separation = rng.uniform(1.2, 2.1) * max(primary["width"], second["width"])
@@ -162,6 +167,7 @@ def generate_curve(material_rows: pd.DataFrame, curve_number: int, family: str, 
                      f"artifact{art_i+1}_amplitude": amp, f"artifact{art_i+1}_sign": sign})
 
     add_baseline_refs(filename, t, occupied, refs)
+    meta["source_curve_ids"] = json.dumps(sorted(set(source_curve_ids)))
     return pd.DataFrame({"temperature": t, "heatflow": signal}), refs, meta
 
 

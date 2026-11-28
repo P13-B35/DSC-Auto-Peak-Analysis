@@ -1,38 +1,56 @@
-# Local software validation
+# Shared-training revision: executed checks
 
-Date: 2026-11-23.
+Date: 2026-11-28. Windows, Python 3.8.2, TensorFlow 2.13.0, NumPy 1.24.3,
+SciPy 1.10.1, pandas 2.0.3, CPU. The original program and manuscript were not edited.
 
-Environment: Windows, Python 3.8.2, CPU, with the installed versions recorded
-in `requirements.txt`.
+## Automated checks
 
-Completed checks:
+`python -B -m unittest discover -s tests -v`: 21 tests passed.
 
-- All Python source files parse successfully.
-- Command-line help works for training, detection/quantification, FS fitting/
-  synthesis, and the artificial example generator.
-- The collected DSC package imports from its own `src` directory.
-- The artificial example generator creates separate whole-curve training and
-  validation inputs for narrow and broad families.
-- FS fitting accepts one artificial narrow and one artificial broad curve;
-  FS synthesis generates a curve and reference annotations for each family.
-- One epoch of narrow real-only training runs with 120-point input.
-- One epoch of broad real-plus-FS training runs with 240-point input.
-- Both saved example models load and execute detection.
-- Thermal calculations run for both artificial families with per-file metadata;
-  integral/mass agrees with the exported specific enthalpy within output rounding.
-- Selecting a model with the wrong input length is rejected.
-- A negative mass argument is rejected.
-- Collected original source hashes are unchanged. The two FS source files have
-  only their workstation-specific `WORK` path replaced by a script-relative
-  path. Portable wrappers are new files and do not replace original projects.
-- The release directory contains no measured input workbooks, pretrained
-  weights, generated demonstration outputs, PDFs, cache files, or old backups.
+Coverage includes shared whole-curve identity, renamed-curve leakage, invalid
+input/annotations, FS-parent validation, migration, preserving all base samples,
+common training centers, broad-peak exclusion from hard negatives, dynamic
+windows, raw-probability ensemble averaging, probability/SNR gates, within-scale
+suppression, common-minimum merging, one-/two-scale routing, temporal FWHM
+units, unresolved boundaries, and rejecting invalid quantitative results.
 
-These are execution checks using artificial curves. One-epoch models are not
-validated scientific detectors and their metrics do not reproduce paper results.
-No new clean-environment installation, GPU execution, GitHub upload, Release,
-or DOI archive was performed in these checks. After uploading, download the
-repository into a separate directory and follow the installation instructions.
+## Executed integration checks
 
-The generated test data, model files, and detailed local logs are kept outside
-the release directory.
+- Generated explicitly artificial curves: 8 training and 4 validation curves.
+- Fitted all 8 artificial training curves; all 8 FS fits accepted. Generated
+  4 FS curves, with all recorded parents belonging to artificial training.
+- Legacy-folder union and canonical shared-directory migration preserved the
+  dataset fingerprint.
+- Trained both 120- and 240-point networks for one epoch each on the SAME
+  8 training, 4 validation and 4 FS curves. Both runs recorded fingerprint
+  `f5e41b1698b8faa11da978286f35c07ccea1a93af37e83322320fadcd94c892a`.
+- Both networks saved HDF5 weights, training histories and dataset plans.
+- Reloaded both networks through detect-joint; exported TSV plus model hashes
+  and configuration provenance. The one-epoch models detected zero peaks;
+  the empty-output quantify path completed.
+- Used controlled probabilities on two clean ARTIFICIAL Gaussian curves to
+  exercise nonempty joint output. Widths of 3 and 18 degrees Celsius selected
+  narrow and broad boundary rules, respectively. The retained quantitative
+  CLI calculated two finite positive enthalpies. This checks routing and file
+  compatibility, NOT learned detector accuracy.
+- Unresolved/NaN boundaries were rejected by quantify.
+- Pure data preparation and routing imports do not load TensorFlow.
+- Windows Unicode paths were tested. HDF5 reload uses h5py; CSV history uses
+  Python file I/O. TensorBoard is disabled for unsupported non-ASCII log paths.
+  Network topology, loss weights and thermal formulas are unchanged.
+
+The check outputs and one-epoch weights are under workspace/, excluded from
+version control. workspace/check_summary.json records software-check counts.
+CHANGELOG.md describes the source changes. SHA256SUMS.txt lists the current
+repository file checksums. The local revision manifest is not distributed.
+
+## Result scope
+
+No measured curves were used for training/evaluation in this revision. No paper
+performance claim was recomputed. The one-epoch artificial weights are software
+examples, not models for real DSC analysis. Shared-data models need actual-data
+training/evaluation before their accuracy can be reported. The historical width
+threshold remains explicit configuration, not a newly calibrated result.
+
+These checks preceded this repository update. No release, fresh-environment
+installation or GPU validation was performed.

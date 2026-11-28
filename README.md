@@ -56,38 +56,37 @@ in `templates/`. Annotation temperatures must describe the supplied curves.
 
 ## Train
 
-Prepare train and validation sets at whole-curve level. Keep a source curve and
-synthetic curves derived from it out of the validation set if it is used for
-training. The expected directory structure is:
+Prepare train and validation sets once at whole-curve level. Both observation
+scales use every curve and every three-class annotation in the same split.
+Keep synthetic descendants of validation curves out of training. The layout is:
 
 ```text
 my_dataset/
   splits/
-    narrow/
+    shared/
       real_train/       # .xlsx curves and references.tsv
       real_val/         # .xlsx curves and references.tsv
-    broad/
-      real_train/
-      real_val/
-  synthetic_narrow/    # needed only for real_fs
-  synthetic_broad/     # needed only for real_fs
+  synthetic/           # all FS curves, needed only for real_fs
 ```
 
-Use the portable entry point below. It selects the existing 120-point narrow
-and 240-point broad training path, with target temperature spans of 2 and 4
-degrees Celsius respectively. The source code retains these settings in
-`PAPER_WINDOWS`; it also retains historical settings used by earlier entry
-points. `train.py` explicitly selects the 120/240-point path.
+The narrow and broad names identify the two observation scales, not training
+curve categories. Their target spans are 2 and 4 degrees Celsius, resampled to
+120 and 240 points. Both models learn `melt_peak`, `baseline`, and `artifact`
+from the same curves. Raw window lengths adapt to the temperature sampling.
 
 ```text
-python train.py --data-root my_dataset --family narrow --variant real_only
-python train.py --data-root my_dataset --family broad --variant real_fs
+python train.py --data-root my_dataset --family both --variant real_only
+python train.py --data-root my_dataset --family both --variant real_fs
 ```
 
 `--epochs`, `--patience`, `--seed`, and `--output-dir` are optional. Models,
-training histories, and metrics are saved beneath `runs/` by default. Use the
-printed model path when running detection. The unmodified lower-level
-`train_family_models.py` is included as the implementation of this entry point.
+training histories, metrics, and dataset fingerprints are saved beneath `runs/`.
+Use `--prepare-only` to check and export the shared dataset plan without training.
+Use `--seeds 20260713 20260714 20260715 20260716 20260717` for the five-seed
+ensemble described in the manuscript. A seed changes
+training randomness, never the fixed whole-curve split. Each run records its
+actual curve membership. See `shared_dataset.py --help` to pool legacy folders
+into a new shared dataset without overwriting the original data.
 
 ## FS fitting and synthesis
 
@@ -120,23 +119,39 @@ python dsc_peakbot_cli.py detect --help
 python dsc_peakbot_cli.py quantify --help
 ```
 
-The detection command accepts one trained model and its family. The
-quantification command consumes saved detections and uses their melting-peak
-boundaries. It constructs a baseline and calls the existing enthalpy and
-extrapolated-temperature functions. The mass and heating rate must be supplied
-explicitly, either as common values or as per-workbook metadata. No pretrained
-model is silently substituted. Run the narrow and broad models separately if
-both are required; this release wrapper does not introduce a new joint-model
-selection rule.
+The retained `detect` command runs one model. Use `detect-joint` for the new
+combined pipeline:
+
+```text
+python dsc_peakbot_cli.py detect-joint curves --narrow-models small_seed1.h5 small_seed2.h5 --broad-models large_seed1.h5 large_seed2.h5 --heating-rate 10 --width-threshold-min 0.4602999429067669 --output detections.tsv
+python dsc_peakbot_cli.py quantify curves --detections detections.tsv --metadata metadata.csv --output thermal.csv
+```
+
+Both scales evaluate the same extrema. Probabilities are averaged over seeds
+within each scale before classification and SNR filtering. Retained candidates
+are combined once; a candidate retained by one scale uses that boundary rule.
+For candidates retained by both, a common quadratic background estimates the
+temperature FWHM. Dividing by the heating rate gives minutes; the narrow rule
+is selected at or below the supplied threshold, and the broad rule above it.
+Unresolved widths/boundaries carry an explicit status and cannot be silently
+used as valid thermal results. The CNN regression outputs remain auxiliary;
+integration boundaries come from the full curve.
+
+The numerical threshold in the example is a historical development value,
+not a calibration of the new shared-training models. The command requires
+an explicit threshold. Probability, SNR and candidate-spacing settings are
+exposed in `detect-joint --help`. Supply the actual heating rate for each curve
+using `--metadata` when rates differ. This revision changes the algorithm;
+the paper's existing numerical results are not new evaluations of this code.
 
 ## Artificial demonstration
 
 ```text
 python examples/make_demo.py --output workspace/demo
-python train.py --data-root workspace/demo --family narrow --variant real_only --epochs 1
+python train.py --data-root workspace/demo --family both --variant real_only --epochs 1
 ```
 
-The one-epoch example checks execution. It does not reproduce the paper's
+The one-epoch example checks execution at both scales. It does not reproduce the paper's
 training results and is not a model for scientific use. `make_demo.py` also
 writes detection and metadata files for exercising thermal calculations without
 model weights. See `README_中文.md` for step-by-step commands.
@@ -144,7 +159,17 @@ model weights. See `README_中文.md` for step-by-step commands.
 See `VALIDATION.md` for checks actually executed on this collection and
 `SHA256SUMS.txt` for file checksums.
 
+## Current implementation notes
+
+This update implements shared-curve training and joint two-scale detection.
+The default training command runs one seed; supply five seeds explicitly for
+five models per scale. Missing or incomplete FS parent metadata is recorded as
+unverified and does not block training. Two retained behaviors are unchanged:
+quantification excludes baseline samples below 80 degrees Celsius, and boundary
+search can return a search limit without confirming a threshold crossing.
+See `CHANGELOG.md` for the scope of this update.
+
 ## Citation and publication
 
-`CITATION.cff` contains software citation metadata. Add the actual repository
-URL, release version, and article citation after they exist.
+`CITATION.cff` contains software citation metadata and the repository URL.
+Article citation and release metadata can be added when available.

@@ -235,7 +235,7 @@ class DSCPeakBot:
 
     @timeit
     def train(self, train_generator, val_data=None, log_dir=None,
-              callbacks=None, verbose=1):
+              callbacks=None, verbose=1, tensorboard=True):
         """Train the model.
 
         Args:
@@ -244,6 +244,7 @@ class DSCPeakBot:
             log_dir: TensorBoard log directory.
             callbacks: Additional Keras callbacks.
             verbose: Keras verbosity level.
+            tensorboard: Enable TensorBoard files (disable on unsupported paths).
         """
         epochs = Config.EPOCHS
         steps  = Config.STEPS_PER_EPOCH
@@ -253,7 +254,8 @@ class DSCPeakBot:
                 'logs', 'fit',
                 f"DSCPeakBot_v{Config.VERSION}_{uuid.uuid4().hex}")
 
-        os.makedirs(log_dir, exist_ok=True)
+        if tensorboard:
+            os.makedirs(log_dir, exist_ok=True)
 
         if verbose:
             print(f"  | Training model '{self.name}'")
@@ -261,7 +263,7 @@ class DSCPeakBot:
             print(f"  | .. log dir: {log_dir}")
 
         _callbacks = []
-        if os.path.isdir(log_dir):
+        if tensorboard and os.path.isdir(log_dir):
             tensorboard_cb = tf.keras.callbacks.TensorBoard(
                 log_dir=log_dir, histogram_freq=0, write_graph=False)
             _callbacks = [tensorboard_cb]
@@ -305,14 +307,21 @@ class DSCPeakBot:
 
     def load(self, filepath):
         """Load a saved model."""
-        self.model = tf.keras.models.load_model(
-            filepath,
-            custom_objects={
-                'iou_metric': iou_metric,
-                'pF1': pF1,
-                'pTPR': pTPR,
-                'pFPR': pFPR,
-            })
+        custom_objects = {
+            'iou_metric': iou_metric, 'pF1': pF1,
+            'pTPR': pTPR, 'pFPR': pFPR,
+        }
+        # h5py supports Windows Unicode paths that TensorFlow 2.13's
+        # directory probing cannot decode. Passing the open HDF5 object
+        # avoids that filesystem probe without copying or altering weights.
+        if os.path.isfile(filepath) and str(filepath).lower().endswith(('.h5', '.hdf5')):
+            import h5py
+            with h5py.File(filepath, 'r') as handle:
+                self.model = tf.keras.models.load_model(
+                    handle, custom_objects=custom_objects)
+        else:
+            self.model = tf.keras.models.load_model(
+                filepath, custom_objects=custom_objects)
 
 
 # ---------------------------------------------------------------------------

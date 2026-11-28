@@ -2,6 +2,7 @@
 import argparse
 import csv
 import json
+import shutil
 from pathlib import Path
 
 def main():
@@ -59,6 +60,19 @@ def main():
         pd.DataFrame([dict(filename=name, mass_mg=10., heating_rate_C_min=10.)
             for name in melts["filename"]]).to_csv(root / (family + "_metadata.csv"), index=False)
     pd.DataFrame(manifest).to_csv(root / "ARTIFICIAL_fs_manifest.csv", index=False)
+    # Preserve the original demonstration folders for legacy CLI examples,
+    # and expose their complete union to BOTH observation scales.
+    for split in ("real_train", "real_val"):
+        shared = root / "splits" / "shared" / split
+        shared.mkdir(parents=True, exist_ok=True)
+        refs = []
+        for family in ("narrow", "broad"):
+            source = root / "splits" / family / split
+            for path in source.glob("*.xlsx"):
+                shutil.copy2(path, shared / path.name)
+            refs.append(pd.read_csv(source / "references.tsv", sep="\t"))
+        pd.concat(refs, ignore_index=True).to_csv(
+            shared / "references.tsv", sep="\t", index=False)
     (root / "ARTIFICIAL_DATA_README.txt").write_text(
         "All curves and metadata in this directory are artificial software examples.\n"
         "They are not measured data, experimental results, or validation evidence for a trained detector.\n",
